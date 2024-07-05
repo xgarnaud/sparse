@@ -2,7 +2,7 @@
 use std::{fmt::Display, ops::Range};
 
 use iterators::{ParallelRowsIterator, ParallelRowsMutIterator, RowsIterator, RowsMutIterator};
-use rayon::iter::IndexedParallelIterator;
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 mod iterators;
 
 pub struct Row<'a>(&'a [(usize, f64)]);
@@ -97,8 +97,17 @@ pub struct SparseBlockMat {
 }
 
 impl SparseBlockMat {
-    pub fn new<I: Iterator<Item = [usize; 2]> + Clone>(n_verts: usize, edges: I) -> Self {
-        let mut ptr = vec![1; n_verts + 1];
+    pub fn from_edges<I: Iterator<Item = [usize; 2]> + Clone>(
+        n_verts: usize,
+        edges: I,
+        with_diagonal: bool,
+    ) -> Self {
+        let mut ptr = if with_diagonal {
+            vec![1; n_verts + 1]
+        } else {
+            vec![0; n_verts + 1]
+        };
+
         ptr[0] = 0;
         for [i0, i1] in edges.clone() {
             ptr[i0 + 1] += 1;
@@ -112,9 +121,11 @@ impl SparseBlockMat {
         let mut data = vec![(usize::MAX, 0.0); nnz];
 
         // diagonal part
-        ptr.iter().take(n_verts).enumerate().for_each(|(i, &idx)| {
-            data[idx].0 = i;
-        });
+        if with_diagonal {
+            ptr.iter().take(n_verts).enumerate().for_each(|(i, &idx)| {
+                data[idx].0 = i;
+            });
+        }
 
         for [i0, i1] in edges {
             #[allow(clippy::needless_range_loop)]
@@ -144,6 +155,9 @@ impl SparseBlockMat {
     pub fn n(&self) -> usize {
         self.ptr.len() - 1
     }
+    pub fn nnz(&self) -> usize {
+        self.data.len()
+    }
     fn range(&self, i: usize) -> Range<usize> {
         self.ptr[i]..self.ptr[i + 1]
     }
@@ -167,6 +181,16 @@ impl SparseBlockMat {
     pub fn seq_rows_mut(&mut self) -> impl ExactSizeIterator<Item = RowMut<'_>> {
         RowsMutIterator::new(self)
     }
+    pub fn set(&mut self, i: usize, j: usize, v: f64) {
+        *(self.row_mut(i).get(j).unwrap()) = v;
+    }
+    pub fn mult(&self, b: &[f64]) -> Vec<f64> {
+        let mut res = vec![0.0; self.n()];
+        self.rows()
+            .zip(res.par_iter_mut())
+            .for_each(|(row, y)| *y = row.iter().fold(0.0, |x, (j, v)| x + v * b[*j]));
+        res
+    }
 }
 
 #[cfg(test)]
@@ -189,7 +213,7 @@ mod tests {
                 }
             }
         }
-        SparseBlockMat::new(ni * nj, edgs.iter().copied())
+        SparseBlockMat::from_edges(ni * nj, edgs.iter().copied(), true)
     }
 
     #[test]
@@ -236,6 +260,35 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn test_3() {
+        let n = 100;
+        let edges = (0..(n - 1)).map(|i| [i, i + 1]);
+        let mut mat = SparseBlockMat::from_edges(n, edges, false);
+        assert_eq!(mat.n(), n);
+        assert_eq!(mat.nnz(), 2 * (n - 2) + 2);
+
+        mat.rows_mut().for_each(|mut row| {
+            row.iter_mut().for_each(|(_, v)| *v = 0.5);
+        });
+        mat.set(0, 1, 1.0);
+        mat.set(n - 1, n - 2, 1.0);
+
+        let d = 1.0 / (n as f64 - 1.0);
+        let x = |i: usize| d * i as f64;
+
+        let f = (0..n).map(|i| x(i).sin()).collect::<Vec<_>>();
+
+        let g = mat.mult(&f);
+
+        assert_eq!(g[0], f[1]);
+        assert_eq!(g[n - 1], f[n - 2]);
+        for (i, &v) in g.iter().enumerate().skip(1).take(n - 2) {
+            let tmp = 0.5 * (x(i - 1).sin() + x(i + 1).sin());
+            assert_eq!(tmp, v);
         }
     }
 }
