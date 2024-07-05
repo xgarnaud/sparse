@@ -1,3 +1,4 @@
+#![feature(raw_slice_split)]
 use std::{fmt::Display, ops::Range};
 
 pub struct Row<'a>(&'a [(usize, f64)]);
@@ -48,10 +49,10 @@ impl<'a> RowMut<'a> {
     pub fn iter_mut(&mut self) -> impl ExactSizeIterator<Item = &mut (usize, f64)> {
         self.0.iter_mut()
     }
-    pub fn get(&self, j: usize) -> Option<&f64> {
+    pub fn get(&mut self, j: usize) -> Option<&mut f64> {
         let idx = self.0.binary_search_by(|x| x.0.cmp(&j));
         if let Ok(idx) = idx {
-            Some(&self.0[idx].1)
+            Some(&mut self.0[idx].1)
         } else {
             None
         }
@@ -69,6 +70,56 @@ impl<'a> RowMut<'a> {
     }
     pub fn zero(&mut self) {
         self.iter_mut().for_each(|x| x.1 = 0.0);
+    }
+}
+
+impl<'a> Display for RowMut<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "cols: ")?;
+        for (j, _) in self.0.iter() {
+            write!(f, "{} ", j)?;
+        }
+        write!(f, ", vals: ")?;
+        for (_, v) in self.0.iter() {
+            write!(f, "{} ", v)?;
+        }
+        Ok(())
+    }
+}
+
+pub struct RowsMutIterator<'a> {
+    ptr: &'a [usize],
+    data: *mut [(usize, f64)],
+}
+
+impl<'a> RowsMutIterator<'a> {
+    pub fn new(mat: &'a mut SparseBlockMat) -> Self {
+        Self {
+            ptr: &mat.ptr,
+            data: mat.data.as_mut_slice(),
+        }
+    }
+}
+
+impl<'a> Iterator for RowsMutIterator<'a> {
+    type Item = RowMut<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.ptr.len() < 2 {
+            return None;
+        }
+        let n = self.ptr[1] - self.ptr[0];
+        let (head, tail) = unsafe { self.data.split_at_mut(n) };
+        self.ptr = &self.ptr[1..];
+        self.data = tail;
+
+        Some(RowMut(unsafe { &mut *head }))
+    }
+}
+
+impl<'a> ExactSizeIterator for RowsMutIterator<'a> {
+    fn len(&self) -> usize {
+        self.ptr.len() - 1
     }
 }
 
@@ -139,10 +190,9 @@ impl SparseBlockMat {
         let range = self.range(i);
         RowMut(&mut self.data[range])
     }
-    // pub fn rows_mut(&mut self) -> impl ExactSizeIterator<Item = RowMut<'_>> {
-    //     let a = self.ptr.chunks_mut(3);
-    //     (0..self.n()).map(|i| self.row_mut(i))
-    // }
+    pub fn rows_mut(&mut self) -> impl ExactSizeIterator<Item = RowMut<'_>> {
+        RowsMutIterator::new(self)
+    }
 }
 
 #[cfg(test)]
@@ -186,6 +236,29 @@ mod tests {
                 assert!(row.get(i).is_some())
             } else {
                 assert!(row.get(i).is_none())
+            }
+        }
+    }
+
+    #[test]
+    fn test_2() {
+        let mut mat = get_laplacian_2d(5, 5);
+
+        for (i, mut row) in mat.rows_mut().enumerate() {
+            let val = row.get(i).unwrap();
+            *val = 1.0;
+        }
+
+        for i in 0..mat.n() {
+            let row = mat.row(i);
+            for j in 0..mat.n() {
+                if let Some(&v) = row.get(j) {
+                    if i == j {
+                        assert_eq!(v, 1.0);
+                    } else {
+                        assert_eq!(v, 0.0);
+                    }
+                }
             }
         }
     }
