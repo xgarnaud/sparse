@@ -1,6 +1,10 @@
 #![feature(raw_slice_split)]
 use std::{fmt::Display, ops::Range};
 
+use iterators::{ParallelRowsIterator, ParallelRowsMutIterator, RowsIterator, RowsMutIterator};
+use rayon::iter::IndexedParallelIterator;
+mod iterators;
+
 pub struct Row<'a>(&'a [(usize, f64)]);
 
 impl<'a> Row<'a> {
@@ -87,42 +91,6 @@ impl<'a> Display for RowMut<'a> {
     }
 }
 
-pub struct RowsMutIterator<'a> {
-    ptr: &'a [usize],
-    data: *mut [(usize, f64)],
-}
-
-impl<'a> RowsMutIterator<'a> {
-    pub fn new(mat: &'a mut SparseBlockMat) -> Self {
-        Self {
-            ptr: &mat.ptr,
-            data: mat.data.as_mut_slice(),
-        }
-    }
-}
-
-impl<'a> Iterator for RowsMutIterator<'a> {
-    type Item = RowMut<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.ptr.len() < 2 {
-            return None;
-        }
-        let n = self.ptr[1] - self.ptr[0];
-        let (head, tail) = unsafe { self.data.split_at_mut(n) };
-        self.ptr = &self.ptr[1..];
-        self.data = tail;
-
-        Some(RowMut(unsafe { &mut *head }))
-    }
-}
-
-impl<'a> ExactSizeIterator for RowsMutIterator<'a> {
-    fn len(&self) -> usize {
-        self.ptr.len() - 1
-    }
-}
-
 pub struct SparseBlockMat {
     ptr: Vec<usize>,
     data: Vec<(usize, f64)>,
@@ -183,20 +151,28 @@ impl SparseBlockMat {
         let range = self.range(i);
         Row(&self.data[range])
     }
-    pub fn rows(&self) -> impl ExactSizeIterator<Item = Row<'_>> {
-        (0..self.n()).map(|i| self.row(i))
+    pub fn rows(&self) -> impl IndexedParallelIterator<Item = Row<'_>> {
+        ParallelRowsIterator::new(self)
+    }
+    pub fn seq_rows(&self) -> impl ExactSizeIterator<Item = Row<'_>> {
+        RowsIterator::new(self)
     }
     pub fn row_mut(&mut self, i: usize) -> RowMut<'_> {
         let range = self.range(i);
         RowMut(&mut self.data[range])
     }
-    pub fn rows_mut(&mut self) -> impl ExactSizeIterator<Item = RowMut<'_>> {
+    pub fn rows_mut(&mut self) -> impl IndexedParallelIterator<Item = RowMut<'_>> {
+        ParallelRowsMutIterator::new(self)
+    }
+    pub fn seq_rows_mut(&mut self) -> impl ExactSizeIterator<Item = RowMut<'_>> {
         RowsMutIterator::new(self)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use rayon::iter::{IndexedParallelIterator, ParallelIterator};
+
     use crate::SparseBlockMat;
 
     fn get_laplacian_2d(ni: usize, nj: usize) -> SparseBlockMat {
@@ -244,10 +220,10 @@ mod tests {
     fn test_2() {
         let mut mat = get_laplacian_2d(5, 5);
 
-        for (i, mut row) in mat.rows_mut().enumerate() {
+        mat.rows_mut().enumerate().for_each(|(i, mut row)| {
             let val = row.get(i).unwrap();
             *val = 1.0;
-        }
+        });
 
         for i in 0..mat.n() {
             let row = mat.row(i);
