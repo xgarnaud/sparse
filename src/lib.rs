@@ -112,6 +112,16 @@ pub struct JacobiParams {
     pub abs_tol: f64,
 }
 
+impl Default for JacobiParams {
+    fn default() -> Self {
+        Self {
+            max_iter: 100,
+            rel_tol: 1e-6,
+            abs_tol: 1e-12,
+        }
+    }
+}
+
 impl SparseBlockMat {
     pub fn from_edges<I: Iterator<Item = [usize; 2]> + Clone>(
         n_verts: usize,
@@ -296,7 +306,6 @@ impl SparseBlockMat {
 mod tests {
     use crate::{JacobiParams, SparseBlockMat};
     use rayon::iter::ParallelIterator;
-    use test::Bencher;
 
     fn get_laplacian_2d(ni: usize, nj: usize) -> SparseBlockMat {
         let dx = 1.0 / (ni as f64 + 1.0);
@@ -459,119 +468,5 @@ mod tests {
 
         let residual = mat.residual(&rhs, &b);
         assert!(residual < params.rel_tol * SparseBlockMat::l2_norm(&rhs));
-    }
-
-    fn _benchmark_mult(b: &mut Bencher, n_threads: usize, chunks: bool) {
-        use rand::{rngs::StdRng, Rng, SeedableRng};
-        let mat = get_laplacian_2d(200, 200);
-
-        let mut rng = StdRng::seed_from_u64(1234);
-        let x = (0..mat.n())
-            .map(|_| rng.gen::<f64>() - 0.5)
-            .collect::<Vec<_>>();
-
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(n_threads)
-            .build()
-            .unwrap();
-
-        if chunks {
-            let chunk_size = mat.n() / n_threads;
-            b.iter(|| {
-                pool.install(|| {
-                    let _y = mat.mult_chunks(&x, chunk_size);
-                });
-            });
-        } else {
-            b.iter(|| {
-                pool.install(|| {
-                    let _y = mat.mult(&x);
-                });
-            });
-        }
-    }
-
-    #[bench]
-    fn benchmark_mult_seq(b: &mut Bencher) {
-        use rand::{rngs::StdRng, Rng, SeedableRng};
-
-        let mat = get_laplacian_2d(200, 200);
-
-        let mut rng = StdRng::seed_from_u64(1234);
-        let x = (0..mat.n())
-            .map(|_| rng.gen::<f64>() - 0.5)
-            .collect::<Vec<_>>();
-        b.iter(|| {
-            let _y = mat.seq_mult(&x);
-        });
-    }
-
-    #[bench]
-    fn benchmark_mult_1(b: &mut Bencher) {
-        _benchmark_mult(b, 1, false);
-    }
-
-    #[bench]
-    fn benchmark_mult_2(b: &mut Bencher) {
-        _benchmark_mult(b, 2, false);
-    }
-
-    #[bench]
-    fn benchmark_mult_4(b: &mut Bencher) {
-        _benchmark_mult(b, 4, false);
-    }
-
-    #[bench]
-    fn benchmark_mult_chunks_1(b: &mut Bencher) {
-        _benchmark_mult(b, 1, true);
-    }
-
-    #[bench]
-    fn benchmark_mult_chunks_2(b: &mut Bencher) {
-        _benchmark_mult(b, 2, true);
-    }
-
-    #[bench]
-    fn benchmark_mult_chunks_4(b: &mut Bencher) {
-        _benchmark_mult(b, 4, true);
-    }
-
-    fn _benchmark_jacobi(b: &mut Bencher, n_threads: usize) {
-        let mat = get_laplacian_2d(200, 200);
-        let rhs = vec![1.0; mat.n()];
-
-        let params = JacobiParams {
-            max_iter: 10,
-            rel_tol: 1e-4,
-            abs_tol: 1.0,
-        };
-
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(n_threads)
-            .build()
-            .unwrap();
-
-        b.iter(|| {
-            pool.install(|| {
-                let mut b = vec![0.0; mat.n()];
-                let (niter, _residual) = mat.jacobi(&rhs, &mut b, params);
-                assert_eq!(niter, params.max_iter);
-            });
-        });
-    }
-
-    #[bench]
-    fn benchmark_jacobi_1(b: &mut Bencher) {
-        _benchmark_jacobi(b, 1);
-    }
-
-    #[bench]
-    fn benchmark_jacobi_2(b: &mut Bencher) {
-        _benchmark_jacobi(b, 2);
-    }
-
-    #[bench]
-    fn benchmark_jacobi_4(b: &mut Bencher) {
-        _benchmark_jacobi(b, 4);
     }
 }
