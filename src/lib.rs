@@ -1,6 +1,4 @@
 #![feature(raw_slice_split)]
-#![feature(test)]
-extern crate test;
 
 use iterators::{ParallelRowsIterator, ParallelRowsMutIterator, RowsIterator, RowsMutIterator};
 use rayon::iter::{
