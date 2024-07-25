@@ -14,6 +14,13 @@ impl<'a> RowsIterator<'a> {
         }
     }
 
+    pub fn new_range(mat: &'a SparseBlockMat, start: usize, end: usize) -> Self {
+        Self {
+            ptr: &mat.ptr[start..end],
+            data: &mat.data[mat.ptr[start]..mat.ptr[end]],
+        }
+    }
+
     fn length(&self) -> usize {
         self.ptr.len()
     }

@@ -4,8 +4,10 @@ extern crate test;
 
 use iterators::{ParallelRowsIterator, ParallelRowsMutIterator, RowsIterator, RowsMutIterator};
 use rayon::iter::{
-    IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator,
+    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
+    IntoParallelRefMutIterator, ParallelIterator,
 };
+use rayon::slice::ParallelSliceMut;
 use std::{fmt::Display, ops::Range};
 mod iterators;
 
@@ -182,6 +184,20 @@ impl SparseBlockMat {
     pub fn rows(&self) -> impl IndexedParallelIterator<Item = Row<'_>> {
         ParallelRowsIterator::new(self)
     }
+    pub fn row_chunks(
+        &self,
+        chunk_size: usize,
+    ) -> impl IndexedParallelIterator<Item = RowsIterator<'_>> {
+        let mut n_chunks = self.n() / chunk_size;
+        if n_chunks * chunk_size < self.n() {
+            n_chunks += 1;
+        }
+        (0..n_chunks).into_par_iter().map(move |i_chunk| {
+            let start = i_chunk * chunk_size;
+            let end = (start + chunk_size).min(self.n());
+            RowsIterator::new_range(self, start, end)
+        })
+    }
     pub fn seq_rows(&self) -> impl ExactSizeIterator<Item = Row<'_>> {
         RowsIterator::new(self)
     }
@@ -209,6 +225,23 @@ impl SparseBlockMat {
         self.rows()
             .zip(res.par_iter_mut())
             .for_each(|(row, y)| *y = row.mult(b));
+        res
+    }
+    pub fn seq_mult(&self, b: &[f64]) -> Vec<f64> {
+        let mut res = vec![0.0; self.n()];
+        self.seq_rows()
+            .zip(res.iter_mut())
+            .for_each(|(row, y)| *y = row.mult(b));
+        res
+    }
+    pub fn mult_chunks(&self, b: &[f64], chunk_size: usize) -> Vec<f64> {
+        let mut res = vec![0.0; self.n()];
+        self.row_chunks(chunk_size)
+            .zip(res.par_chunks_mut(chunk_size))
+            .for_each(|(rows, res)| {
+                rows.zip(res.iter_mut())
+                    .for_each(|(row, y)| *y = row.mult(b))
+            });
         res
     }
     pub fn residual(&self, rhs: &[f64], b: &[f64]) -> f64 {
@@ -375,6 +408,31 @@ mod tests {
     }
 
     #[test]
+    fn test_chunks() {
+        use rand::{rngs::StdRng, Rng, SeedableRng};
+
+        let mat = get_laplacian_2d(5, 5);
+        assert_eq!(mat.row_chunks(4).map(|rows| rows.len()).sum::<usize>(), 25);
+
+        let mut rng = StdRng::seed_from_u64(1234);
+
+        let x = (0..mat.n())
+            .map(|_| rng.gen::<f64>() - 0.5)
+            .collect::<Vec<_>>();
+
+        let y = mat.mult(&x);
+        let y_chunks = mat.mult_chunks(&x, 4);
+
+        let err = y
+            .iter()
+            .zip(y_chunks.iter())
+            .map(|(y, y_chunks)| (y - y_chunks).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        assert!(err < 1e-12 * SparseBlockMat::l2_norm(&y));
+    }
+
+    #[test]
     fn test_residual() {
         let mat = get_laplacian_2d(5, 5);
         let b = vec![1.0; mat.n()];
@@ -403,8 +461,83 @@ mod tests {
         assert!(residual < params.rel_tol * SparseBlockMat::l2_norm(&rhs));
     }
 
+    fn _benchmark_mult(b: &mut Bencher, n_threads: usize, chunks: bool) {
+        use rand::{rngs::StdRng, Rng, SeedableRng};
+        let mat = get_laplacian_2d(200, 200);
+
+        let mut rng = StdRng::seed_from_u64(1234);
+        let x = (0..mat.n())
+            .map(|_| rng.gen::<f64>() - 0.5)
+            .collect::<Vec<_>>();
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(n_threads)
+            .build()
+            .unwrap();
+
+        if chunks {
+            let chunk_size = mat.n() / n_threads;
+            b.iter(|| {
+                pool.install(|| {
+                    let _y = mat.mult_chunks(&x, chunk_size);
+                });
+            });
+        } else {
+            b.iter(|| {
+                pool.install(|| {
+                    let _y = mat.mult(&x);
+                });
+            });
+        }
+    }
+
+    #[bench]
+    fn benchmark_mult_seq(b: &mut Bencher) {
+        use rand::{rngs::StdRng, Rng, SeedableRng};
+
+        let mat = get_laplacian_2d(200, 200);
+
+        let mut rng = StdRng::seed_from_u64(1234);
+        let x = (0..mat.n())
+            .map(|_| rng.gen::<f64>() - 0.5)
+            .collect::<Vec<_>>();
+        b.iter(|| {
+            let _y = mat.seq_mult(&x);
+        });
+    }
+
+    #[bench]
+    fn benchmark_mult_1(b: &mut Bencher) {
+        _benchmark_mult(b, 1, false);
+    }
+
+    #[bench]
+    fn benchmark_mult_2(b: &mut Bencher) {
+        _benchmark_mult(b, 2, false);
+    }
+
+    #[bench]
+    fn benchmark_mult_4(b: &mut Bencher) {
+        _benchmark_mult(b, 4, false);
+    }
+
+    #[bench]
+    fn benchmark_mult_chunks_1(b: &mut Bencher) {
+        _benchmark_mult(b, 1, true);
+    }
+
+    #[bench]
+    fn benchmark_mult_chunks_2(b: &mut Bencher) {
+        _benchmark_mult(b, 2, true);
+    }
+
+    #[bench]
+    fn benchmark_mult_chunks_4(b: &mut Bencher) {
+        _benchmark_mult(b, 4, true);
+    }
+
     fn _benchmark_jacobi(b: &mut Bencher, n_threads: usize) {
-        let mat = get_laplacian_2d(100, 100);
+        let mat = get_laplacian_2d(200, 200);
         let rhs = vec![1.0; mat.n()];
 
         let params = JacobiParams {
@@ -428,12 +561,17 @@ mod tests {
     }
 
     #[bench]
-    fn benchmark_jacobi_explicit_1(b: &mut Bencher) {
+    fn benchmark_jacobi_1(b: &mut Bencher) {
         _benchmark_jacobi(b, 1);
     }
 
     #[bench]
-    fn benchmark_jacobi_explicit_4(b: &mut Bencher) {
+    fn benchmark_jacobi_2(b: &mut Bencher) {
+        _benchmark_jacobi(b, 2);
+    }
+
+    #[bench]
+    fn benchmark_jacobi_4(b: &mut Bencher) {
         _benchmark_jacobi(b, 4);
     }
 }
