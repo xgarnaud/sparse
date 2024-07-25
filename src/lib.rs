@@ -1,4 +1,6 @@
 #![feature(raw_slice_split)]
+#![feature(test)]
+extern crate test;
 
 use iterators::{ParallelRowsIterator, ParallelRowsMutIterator, RowsIterator, RowsMutIterator};
 use rayon::iter::{
@@ -261,7 +263,7 @@ impl SparseBlockMat {
 mod tests {
     use crate::{JacobiParams, SparseBlockMat};
     use rayon::iter::ParallelIterator;
-    use crate::SparseBlockMat;
+    use test::Bencher;
 
     fn get_laplacian_2d(ni: usize, nj: usize) -> SparseBlockMat {
         let dx = 1.0 / (ni as f64 + 1.0);
@@ -399,5 +401,39 @@ mod tests {
 
         let residual = mat.residual(&rhs, &b);
         assert!(residual < params.rel_tol * SparseBlockMat::l2_norm(&rhs));
+    }
+
+    fn _benchmark_jacobi(b: &mut Bencher, n_threads: usize) {
+        let mat = get_laplacian_2d(100, 100);
+        let rhs = vec![1.0; mat.n()];
+
+        let params = JacobiParams {
+            max_iter: 10,
+            rel_tol: 1e-4,
+            abs_tol: 1.0,
+        };
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(n_threads)
+            .build()
+            .unwrap();
+
+        b.iter(|| {
+            pool.install(|| {
+                let mut b = vec![0.0; mat.n()];
+                let (niter, _residual) = mat.jacobi(&rhs, &mut b, params);
+                assert_eq!(niter, params.max_iter);
+            });
+        });
+    }
+
+    #[bench]
+    fn benchmark_jacobi_explicit_1(b: &mut Bencher) {
+        _benchmark_jacobi(b, 1);
+    }
+
+    #[bench]
+    fn benchmark_jacobi_explicit_4(b: &mut Bencher) {
+        _benchmark_jacobi(b, 4);
     }
 }
