@@ -1,8 +1,10 @@
 #![feature(raw_slice_split)]
-use std::{fmt::Display, ops::Range};
 
 use iterators::{ParallelRowsIterator, ParallelRowsMutIterator, RowsIterator, RowsMutIterator};
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
+use rayon::iter::{
+    IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator,
+};
+use std::{fmt::Display, ops::Range};
 mod iterators;
 
 pub struct Row<'a>(&'a [(usize, f64)]);
@@ -24,6 +26,9 @@ impl<'a> Row<'a> {
         } else {
             None
         }
+    }
+    pub fn mult(&self, b: &[f64]) -> f64 {
+        self.0.iter().fold(0.0, |x, (j, v)| x + v * b[*j])
     }
 }
 
@@ -94,6 +99,13 @@ impl<'a> Display for RowMut<'a> {
 pub struct SparseBlockMat {
     ptr: Vec<usize>,
     data: Vec<(usize, f64)>,
+}
+
+#[derive(Clone, Copy)]
+pub struct JacobiParams {
+    pub max_iter: usize,
+    pub rel_tol: f64,
+    pub abs_tol: f64,
 }
 
 impl SparseBlockMat {
@@ -184,22 +196,77 @@ impl SparseBlockMat {
     pub fn set(&mut self, i: usize, j: usize, v: f64) {
         *(self.row_mut(i).get(j).unwrap()) = v;
     }
+    pub fn diag(&self) -> Vec<f64> {
+        self.rows()
+            .enumerate()
+            .map(|(i, row)| *row.get(i).unwrap())
+            .collect::<Vec<_>>()
+    }
     pub fn mult(&self, b: &[f64]) -> Vec<f64> {
         let mut res = vec![0.0; self.n()];
         self.rows()
             .zip(res.par_iter_mut())
-            .for_each(|(row, y)| *y = row.iter().fold(0.0, |x, (j, v)| x + v * b[*j]));
+            .for_each(|(row, y)| *y = row.mult(b));
         res
+    }
+    pub fn residual(&self, rhs: &[f64], b: &[f64]) -> f64 {
+        self.rows()
+            .zip(rhs.par_iter())
+            .map(|(row, rhs)| {
+                let tmp = row.mult(b) - rhs;
+                tmp * tmp
+            })
+            .sum::<f64>()
+            .sqrt()
+    }
+    pub fn l2_norm(b: &[f64]) -> f64 {
+        b.par_iter().map(|x| x * x).sum::<f64>().sqrt()
+    }
+    pub fn jacobi(&self, rhs: &[f64], b: &mut [f64], params: JacobiParams) -> (usize, f64) {
+        let nrm = Self::l2_norm(rhs);
+        assert!(nrm > f64::EPSILON);
+        let tol = params.abs_tol.min(params.rel_tol * nrm);
+        let mut res = 0.0;
+
+        let mut diag = self.diag();
+        diag.par_iter_mut().for_each(|x| *x = 1.0 / *x);
+
+        let mut tmp = vec![0.0; self.n()];
+        for iter in 0..params.max_iter {
+            self.rows()
+                .enumerate()
+                .zip(tmp.par_iter_mut())
+                .for_each(|((i_row, row), x)| {
+                    *x = rhs[i_row];
+                    *x -= row
+                        .iter()
+                        .filter(|&(j, _)| *j != i_row)
+                        .fold(0.0, |x, (j, v)| x + v * b[*j]);
+                });
+            b.par_iter_mut()
+                .zip(tmp.par_iter())
+                .zip(diag.par_iter())
+                .for_each(|((b, tmp), d)| *b = tmp * d);
+
+            res = self.residual(rhs, b);
+            if res < tol {
+                return (iter + 1, res);
+            }
+        }
+        (params.max_iter, res)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use rayon::iter::{IndexedParallelIterator, ParallelIterator};
-
+    use crate::{JacobiParams, SparseBlockMat};
+    use rayon::iter::ParallelIterator;
     use crate::SparseBlockMat;
 
     fn get_laplacian_2d(ni: usize, nj: usize) -> SparseBlockMat {
+        let dx = 1.0 / (ni as f64 + 1.0);
+        let dy = 1.0 / (nj as f64 + 1.0);
+
         let idx = |i, j| i + ni * j;
 
         let mut edgs = Vec::new();
@@ -213,7 +280,25 @@ mod tests {
                 }
             }
         }
-        SparseBlockMat::from_edges(ni * nj, edgs.iter().copied(), true)
+        let mut mat = SparseBlockMat::from_edges(ni * nj, edgs.iter().copied(), true);
+        for i in 0..ni {
+            for j in 0..nj {
+                mat.set(idx(i, j), idx(i, j), -2.0 * (1.0 / dx / dx + 1.0 / dy / dy));
+                if i > 0 {
+                    mat.set(idx(i, j), idx(i - 1, j), 1.0 / dx / dx);
+                }
+                if i < ni - 1 {
+                    mat.set(idx(i, j), idx(i + 1, j), 1.0 / dx / dx);
+                }
+                if j > 0 {
+                    mat.set(idx(i, j), idx(i, j - 1), 1.0 / dy / dy);
+                }
+                if j < nj - 1 {
+                    mat.set(idx(i, j), idx(i, j + 1), 1.0 / dy / dy);
+                }
+            }
+        }
+        mat
     }
 
     #[test]
@@ -242,21 +327,16 @@ mod tests {
 
     #[test]
     fn test_2() {
-        let mut mat = get_laplacian_2d(5, 5);
-
-        mat.rows_mut().enumerate().for_each(|(i, mut row)| {
-            let val = row.get(i).unwrap();
-            *val = 1.0;
-        });
+        let mat = get_laplacian_2d(5, 5);
 
         for i in 0..mat.n() {
             let row = mat.row(i);
             for j in 0..mat.n() {
                 if let Some(&v) = row.get(j) {
                     if i == j {
-                        assert_eq!(v, 1.0);
+                        assert_eq!(v, -144.0);
                     } else {
-                        assert_eq!(v, 0.0);
+                        assert_eq!(v, 36.0);
                     }
                 }
             }
@@ -264,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn test_3() {
+    fn test_mult() {
         let n = 100;
         let edges = (0..(n - 1)).map(|i| [i, i + 1]);
         let mut mat = SparseBlockMat::from_edges(n, edges, false);
@@ -290,5 +370,34 @@ mod tests {
             let tmp = 0.5 * (x(i - 1).sin() + x(i + 1).sin());
             assert_eq!(tmp, v);
         }
+    }
+
+    #[test]
+    fn test_residual() {
+        let mat = get_laplacian_2d(5, 5);
+        let b = vec![1.0; mat.n()];
+        let rhs = mat.mult(&b);
+        let res = mat.residual(&rhs, &b);
+        println!("res = {res}");
+        assert!(res < 1e-12);
+    }
+
+    #[test]
+    fn test_jacobi() {
+        let mat = get_laplacian_2d(16, 16);
+        let rhs = vec![1.0; mat.n()];
+        let mut b = vec![0.0; mat.n()];
+
+        let params = JacobiParams {
+            max_iter: 2000,
+            rel_tol: 1e-4,
+            abs_tol: 1.0,
+        };
+        let (niter, residual) = mat.jacobi(&rhs, &mut b, params);
+        assert!(niter < params.max_iter);
+        assert!(residual < params.rel_tol * SparseBlockMat::l2_norm(&rhs));
+
+        let residual = mat.residual(&rhs, &b);
+        assert!(residual < params.rel_tol * SparseBlockMat::l2_norm(&rhs));
     }
 }
