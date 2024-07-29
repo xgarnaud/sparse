@@ -17,7 +17,7 @@ fn benchmark<F: Fn()>(f: F, duration: f64) {
     );
 }
 
-fn get_laplacian_2d(ni: usize, nj: usize) -> SparseBlockMat {
+fn get_laplacian_2d(ni: usize, nj: usize) -> SparseBlockMat<f64> {
     let dx = 1.0 / (ni as f64 + 1.0);
     let dy = 1.0 / (nj as f64 + 1.0);
 

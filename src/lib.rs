@@ -6,22 +6,69 @@ use rayon::iter::{
     IntoParallelRefMutIterator, ParallelIterator,
 };
 use rayon::slice::ParallelSliceMut;
+use std::ops::{Add, AddAssign, Sub, SubAssign};
 use std::{fmt::Display, ops::Range};
 mod iterators;
 
-pub struct Row<'a>(&'a [(usize, f64)]);
+pub trait MatVec {
+    type Mat: Send
+        + Sync
+        + Display
+        + Clone
+        + Copy
+        + AddAssign
+        + SubAssign
+        + Add<Self::Mat, Output = Self::Mat>
+        + Sub<Self::Mat, Output = Self::Mat>;
+    type Vect: Send
+        + Sync
+        + Display
+        + Clone
+        + Copy
+        + AddAssign
+        + SubAssign
+        + Add<Self::Vect, Output = Self::Vect>
+        + Sub<Self::Vect, Output = Self::Vect>;
+    fn mat_zero() -> Self::Mat;
+    fn vect_zero() -> Self::Vect;
+    fn inverse(mat: &Self::Mat) -> Self::Mat;
+    fn mult(mat: &Self::Mat, vec: &Self::Vect) -> Self::Vect;
+    fn norm2(vec: &Self::Vect) -> f64;
+}
 
-impl<'a> Row<'a> {
+impl MatVec for f64 {
+    type Mat = f64;
+    type Vect = f64;
+    fn mat_zero() -> Self::Mat {
+        0.0
+    }
+    fn vect_zero() -> Self::Vect {
+        0.0
+    }
+    fn inverse(mat: &Self::Mat) -> Self::Mat {
+        1.0 / mat
+    }
+    fn mult(mat: &Self::Mat, vec: &Self::Vect) -> Self::Vect {
+        mat * vec
+    }
+    fn norm2(vec: &Self::Vect) -> f64 {
+        vec * vec
+    }
+}
+
+pub struct Row<'a, T: MatVec>(&'a [(usize, T::Mat)]);
+
+impl<'a, T: MatVec> Row<'a, T> {
     pub fn len(&self) -> usize {
         self.0.len()
     }
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = &(usize, f64)> {
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &(usize, T::Mat)> {
         self.0.iter()
     }
-    pub fn get(&self, j: usize) -> Option<&f64> {
+    pub fn get(&self, j: usize) -> Option<&T::Mat> {
         let idx = self.0.binary_search_by(|x| x.0.cmp(&j));
         if let Ok(idx) = idx {
             Some(&self.0[idx].1)
@@ -29,12 +76,14 @@ impl<'a> Row<'a> {
             None
         }
     }
-    pub fn mult(&self, b: &[f64]) -> f64 {
-        self.0.iter().fold(0.0, |x, (j, v)| x + v * b[*j])
+    pub fn mult(&self, b: &[T::Vect]) -> T::Vect {
+        self.0
+            .iter()
+            .fold(T::vect_zero(), |x, (j, v)| x + T::mult(v, &b[*j]))
     }
 }
 
-impl<'a> Display for Row<'a> {
+impl<'a, T: MatVec> Display for Row<'a, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "cols: ")?;
         for (j, _) in self.0.iter() {
@@ -48,19 +97,19 @@ impl<'a> Display for Row<'a> {
     }
 }
 
-pub struct RowMut<'a>(&'a mut [(usize, f64)]);
+pub struct RowMut<'a, T: MatVec>(&'a mut [(usize, T::Mat)]);
 
-impl<'a> RowMut<'a> {
+impl<'a, T: MatVec> RowMut<'a, T> {
     pub fn len(&self) -> usize {
         self.0.len()
     }
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
-    pub fn iter_mut(&mut self) -> impl ExactSizeIterator<Item = &mut (usize, f64)> {
+    pub fn iter_mut(&mut self) -> impl ExactSizeIterator<Item = &mut (usize, T::Mat)> {
         self.0.iter_mut()
     }
-    pub fn get(&mut self, j: usize) -> Option<&mut f64> {
+    pub fn get(&mut self, j: usize) -> Option<&mut T::Mat> {
         let idx = self.0.binary_search_by(|x| x.0.cmp(&j));
         if let Ok(idx) = idx {
             Some(&mut self.0[idx].1)
@@ -68,7 +117,7 @@ impl<'a> RowMut<'a> {
             None
         }
     }
-    pub fn get_mut(&mut self, j: usize) -> Option<&mut f64> {
+    pub fn get_mut(&mut self, j: usize) -> Option<&mut T::Mat> {
         let idx = self.0.binary_search_by(|x| x.0.cmp(&j));
         if let Ok(idx) = idx {
             Some(&mut self.0[idx].1)
@@ -80,11 +129,11 @@ impl<'a> RowMut<'a> {
         self.0.sort_by(|xi, xj| xi.0.cmp(&xj.0));
     }
     pub fn zero(&mut self) {
-        self.iter_mut().for_each(|x| x.1 = 0.0);
+        self.iter_mut().for_each(|x| x.1 = T::mat_zero());
     }
 }
 
-impl<'a> Display for RowMut<'a> {
+impl<'a, T: MatVec> Display for RowMut<'a, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "cols: ")?;
         for (j, _) in self.0.iter() {
@@ -96,11 +145,6 @@ impl<'a> Display for RowMut<'a> {
         }
         Ok(())
     }
-}
-
-pub struct SparseBlockMat {
-    ptr: Vec<usize>,
-    data: Vec<(usize, f64)>,
 }
 
 #[derive(Clone, Copy)]
@@ -120,7 +164,12 @@ impl Default for IterativeParams {
     }
 }
 
-impl SparseBlockMat {
+pub struct SparseBlockMat<T: MatVec> {
+    ptr: Vec<usize>,
+    data: Vec<(usize, T::Mat)>,
+}
+
+impl<T: MatVec> SparseBlockMat<T> {
     pub fn from_edges<I: Iterator<Item = [usize; 2]> + Clone>(
         n_verts: usize,
         edges: I,
@@ -142,7 +191,7 @@ impl SparseBlockMat {
             ptr[i + 1] += ptr[i];
         }
         let nnz = ptr[n_verts];
-        let mut data = vec![(usize::MAX, 0.0); nnz];
+        let mut data = vec![(usize::MAX, T::mat_zero()); nnz];
 
         // diagonal part
         if with_diagonal {
@@ -185,17 +234,17 @@ impl SparseBlockMat {
     fn range(&self, i: usize) -> Range<usize> {
         self.ptr[i]..self.ptr[i + 1]
     }
-    pub fn row(&self, i: usize) -> Row<'_> {
+    pub fn row(&self, i: usize) -> Row<'_, T> {
         let range = self.range(i);
         Row(&self.data[range])
     }
-    pub fn rows(&self) -> impl IndexedParallelIterator<Item = Row<'_>> {
+    pub fn rows(&self) -> impl IndexedParallelIterator<Item = Row<'_, T>> {
         ParallelRowsIterator::new(self)
     }
     pub fn row_chunks(
         &self,
         chunk_size: usize,
-    ) -> impl IndexedParallelIterator<Item = ((usize, usize), RowsIterator<'_>)> {
+    ) -> impl IndexedParallelIterator<Item = ((usize, usize), RowsIterator<'_, T>)> {
         let mut n_chunks = self.n() / chunk_size;
         if n_chunks * chunk_size < self.n() {
             n_chunks += 1;
@@ -208,46 +257,47 @@ impl SparseBlockMat {
     }
     pub fn seq_rows(
         &self,
-    ) -> impl ExactSizeIterator<Item = Row<'_>> + DoubleEndedIterator<Item = Row<'_>> {
+    ) -> impl ExactSizeIterator<Item = Row<'_, T>> + DoubleEndedIterator<Item = Row<'_, T>> {
         RowsIterator::new(self)
     }
-    pub fn row_mut(&mut self, i: usize) -> RowMut<'_> {
+    pub fn row_mut(&mut self, i: usize) -> RowMut<'_, T> {
         let range = self.range(i);
         RowMut(&mut self.data[range])
     }
-    pub fn rows_mut(&mut self) -> impl IndexedParallelIterator<Item = RowMut<'_>> {
+    pub fn rows_mut(&mut self) -> impl IndexedParallelIterator<Item = RowMut<'_, T>> {
         ParallelRowsMutIterator::new(self)
     }
     pub fn seq_rows_mut(
         &mut self,
-    ) -> impl ExactSizeIterator<Item = RowMut<'_>> + DoubleEndedIterator<Item = RowMut<'_>> {
+    ) -> impl ExactSizeIterator<Item = RowMut<'_, T>> + DoubleEndedIterator<Item = RowMut<'_, T>>
+    {
         RowsMutIterator::new(self)
     }
-    pub fn set(&mut self, i: usize, j: usize, v: f64) {
+    pub fn set(&mut self, i: usize, j: usize, v: T::Mat) {
         *(self.row_mut(i).get(j).unwrap()) = v;
     }
-    pub fn diag(&self) -> Vec<f64> {
+    pub fn diag(&self) -> Vec<T::Mat> {
         self.rows()
             .enumerate()
             .map(|(i, row)| *row.get(i).unwrap())
             .collect::<Vec<_>>()
     }
-    pub fn mult(&self, b: &[f64]) -> Vec<f64> {
-        let mut res = vec![0.0; self.n()];
+    pub fn mult(&self, b: &[T::Vect]) -> Vec<T::Vect> {
+        let mut res = vec![T::vect_zero(); self.n()];
         self.rows()
             .zip(res.par_iter_mut())
             .for_each(|(row, y)| *y = row.mult(b));
         res
     }
-    pub fn seq_mult(&self, b: &[f64]) -> Vec<f64> {
-        let mut res = vec![0.0; self.n()];
+    pub fn seq_mult(&self, b: &[T::Vect]) -> Vec<T::Vect> {
+        let mut res = vec![T::vect_zero(); self.n()];
         self.seq_rows()
             .zip(res.iter_mut())
             .for_each(|(row, y)| *y = row.mult(b));
         res
     }
-    pub fn mult_chunks(&self, b: &[f64], chunk_size: usize) -> Vec<f64> {
-        let mut res = vec![0.0; self.n()];
+    pub fn mult_chunks(&self, b: &[T::Vect], chunk_size: usize) -> Vec<T::Vect> {
+        let mut res = vec![T::vect_zero(); self.n()];
         self.row_chunks(chunk_size)
             .zip(res.par_chunks_mut(chunk_size))
             .for_each(|((_, rows), res)| {
@@ -256,29 +306,34 @@ impl SparseBlockMat {
             });
         res
     }
-    pub fn residual(&self, rhs: &[f64], b: &[f64]) -> f64 {
+    pub fn residual(&self, rhs: &[T::Vect], b: &[T::Vect]) -> f64 {
         self.rows()
             .zip(rhs.par_iter())
             .map(|(row, rhs)| {
-                let tmp = row.mult(b) - rhs;
-                tmp * tmp
+                let tmp = row.mult(b) - *rhs;
+                T::norm2(&tmp)
             })
             .sum::<f64>()
             .sqrt()
     }
-    pub fn l2_norm(b: &[f64]) -> f64 {
-        b.par_iter().map(|x| x * x).sum::<f64>().sqrt()
+    pub fn l2_norm(b: &[T::Vect]) -> f64 {
+        b.par_iter().map(|x| T::norm2(x)).sum::<f64>().sqrt()
     }
-    pub fn jacobi(&self, rhs: &[f64], b: &mut [f64], params: IterativeParams) -> (usize, f64) {
+    pub fn jacobi(
+        &self,
+        rhs: &[T::Vect],
+        b: &mut [T::Vect],
+        params: IterativeParams,
+    ) -> (usize, f64) {
         let nrm = Self::l2_norm(rhs);
         assert!(nrm > f64::EPSILON);
         let tol = params.abs_tol.min(params.rel_tol * nrm);
         let mut res = 0.0;
 
         let mut diag = self.diag();
-        diag.par_iter_mut().for_each(|x| *x = 1.0 / *x);
+        diag.par_iter_mut().for_each(|x| *x = T::inverse(x));
 
-        let mut tmp = vec![0.0; self.n()];
+        let mut tmp = vec![T::vect_zero(); self.n()];
         for iter in 0..params.max_iter {
             self.rows()
                 .enumerate()
@@ -288,12 +343,12 @@ impl SparseBlockMat {
                     *x -= row
                         .iter()
                         .filter(|&(j, _)| *j != i_row)
-                        .fold(0.0, |x, (j, v)| x + v * b[*j]);
+                        .fold(T::vect_zero(), |x, (j, v)| x + T::mult(v, &b[*j]));
                 });
             b.par_iter_mut()
                 .zip(tmp.par_iter())
                 .zip(diag.par_iter())
-                .for_each(|((b, tmp), d)| *b = tmp * d);
+                .for_each(|((b, tmp), d)| *b = T::mult(d, &tmp));
 
             res = self.residual(rhs, b);
             if res < tol {
@@ -304,8 +359,8 @@ impl SparseBlockMat {
     }
     pub fn sgs(
         &self,
-        rhs: &[f64],
-        b: &mut [f64],
+        rhs: &[T::Vect],
+        b: &mut [T::Vect],
         params: IterativeParams,
         chunk_size: usize,
     ) -> (usize, f64) {
@@ -315,7 +370,7 @@ impl SparseBlockMat {
         let mut res = 0.0;
 
         let mut diag = self.diag();
-        diag.par_iter_mut().for_each(|x| *x = 1.0 / *x);
+        diag.par_iter_mut().for_each(|x| *x = T::inverse(x));
 
         for iter in 0..params.max_iter {
             let b_copy = b.to_vec();
@@ -328,12 +383,12 @@ impl SparseBlockMat {
                         tmp -= row
                             .iter()
                             .filter(|&(j, _)| *j != i_row && *j >= start && *j < end)
-                            .fold(0.0, |x, (j, v)| x + v * b[*j - start]);
+                            .fold(T::vect_zero(), |x, (j, v)| x + T::mult(v, &b[*j - start]));
                         tmp -= row
                             .iter()
                             .filter(|&(j, _)| *j < start || *j >= end)
-                            .fold(0.0, |x, (j, v)| x + v * b_copy[*j]);
-                        b[i_row - start] = tmp * diag[i_row]
+                            .fold(T::vect_zero(), |x, (j, v)| x + T::mult(v, &b_copy[*j]));
+                        b[i_row - start] = T::mult(&diag[i_row], &tmp);
                     });
                 });
             self.row_chunks(chunk_size)
@@ -345,12 +400,12 @@ impl SparseBlockMat {
                         tmp -= row
                             .iter()
                             .filter(|&(j, _)| *j != i_row && *j >= start && *j < end)
-                            .fold(0.0, |x, (j, v)| x + v * b[*j - start]);
+                            .fold(T::vect_zero(), |x, (j, v)| x + T::mult(v, &b[*j - start]));
                         tmp -= row
                             .iter()
                             .filter(|&(j, _)| *j < start || *j >= end)
-                            .fold(0.0, |x, (j, v)| x + v * b_copy[*j]);
-                        b[i_row - start] = tmp * diag[i_row]
+                            .fold(T::vect_zero(), |x, (j, v)| x + T::mult(v, &b_copy[*j]));
+                        b[i_row - start] = T::mult(&diag[i_row], &tmp);
                     });
                 });
 
@@ -361,14 +416,19 @@ impl SparseBlockMat {
         }
         (params.max_iter, res)
     }
-    pub fn seq_sgs(&self, rhs: &[f64], b: &mut [f64], params: IterativeParams) -> (usize, f64) {
+    pub fn seq_sgs(
+        &self,
+        rhs: &[T::Vect],
+        b: &mut [T::Vect],
+        params: IterativeParams,
+    ) -> (usize, f64) {
         let nrm = Self::l2_norm(rhs);
         assert!(nrm > f64::EPSILON);
         let tol = params.abs_tol.min(params.rel_tol * nrm);
         let mut res = 0.0;
 
         let mut diag = self.diag();
-        diag.par_iter_mut().for_each(|x| *x = 1.0 / *x);
+        diag.par_iter_mut().for_each(|x| *x = T::inverse(x));
 
         for iter in 0..params.max_iter {
             self.seq_rows().enumerate().for_each(|(i_row, row)| {
@@ -376,16 +436,16 @@ impl SparseBlockMat {
                 tmp -= row
                     .iter()
                     .filter(|&(j, _)| *j != i_row)
-                    .fold(0.0, |x, (j, v)| x + v * b[*j]);
-                b[i_row] = tmp * diag[i_row]
+                    .fold(T::vect_zero(), |x, (j, v)| x + T::mult(v, &b[*j]));
+                b[i_row] = T::mult(&diag[i_row], &tmp);
             });
             self.seq_rows().enumerate().rev().for_each(|(i_row, row)| {
                 let mut tmp = rhs[i_row];
                 tmp -= row
                     .iter()
                     .filter(|&(j, _)| *j != i_row)
-                    .fold(0.0, |x, (j, v)| x + v * b[*j]);
-                b[i_row] = tmp * diag[i_row]
+                    .fold(T::vect_zero(), |x, (j, v)| x + T::mult(v, &b[*j]));
+                b[i_row] = T::mult(&diag[i_row], &tmp);
             });
             res = self.residual(rhs, b);
             if res < tol {
@@ -401,7 +461,7 @@ mod tests {
     use crate::{IterativeParams, SparseBlockMat};
     use rayon::iter::ParallelIterator;
 
-    fn get_laplacian_2d(ni: usize, nj: usize) -> SparseBlockMat {
+    fn get_laplacian_2d(ni: usize, nj: usize) -> SparseBlockMat<f64> {
         let dx = 1.0 / (ni as f64 + 1.0);
         let dy = 1.0 / (nj as f64 + 1.0);
 
@@ -485,7 +545,7 @@ mod tests {
     fn test_mult() {
         let n = 100;
         let edges = (0..(n - 1)).map(|i| [i, i + 1]);
-        let mut mat = SparseBlockMat::from_edges(n, edges, false);
+        let mut mat = SparseBlockMat::<f64>::from_edges(n, edges, false);
         assert_eq!(mat.n(), n);
         assert_eq!(mat.nnz(), 2 * (n - 2) + 2);
 
@@ -535,7 +595,7 @@ mod tests {
             .map(|(y, y_chunks)| (y - y_chunks).powi(2))
             .sum::<f64>()
             .sqrt();
-        assert!(err < 1e-12 * SparseBlockMat::l2_norm(&y));
+        assert!(err < 1e-12 * SparseBlockMat::<f64>::l2_norm(&y));
     }
 
     #[test]
@@ -561,10 +621,10 @@ mod tests {
         };
         let (niter, residual) = mat.jacobi(&rhs, &mut b, params);
         assert!(niter < params.max_iter);
-        assert!(residual < params.rel_tol * SparseBlockMat::l2_norm(&rhs));
+        assert!(residual < params.rel_tol * SparseBlockMat::<f64>::l2_norm(&rhs));
 
         let residual = mat.residual(&rhs, &b);
-        assert!(residual < params.rel_tol * SparseBlockMat::l2_norm(&rhs));
+        assert!(residual < params.rel_tol * SparseBlockMat::<f64>::l2_norm(&rhs));
     }
 
     #[test]

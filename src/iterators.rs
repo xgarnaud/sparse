@@ -1,20 +1,20 @@
-use crate::{Row, RowMut, SparseBlockMat};
+use crate::{MatVec, Row, RowMut, SparseBlockMat};
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 
-pub struct RowsIterator<'a> {
+pub struct RowsIterator<'a, T: MatVec> {
     ptr: &'a [usize],
-    data: &'a [(usize, f64)],
+    data: &'a [(usize, T::Mat)],
 }
 
-impl<'a> RowsIterator<'a> {
-    pub fn new(mat: &'a SparseBlockMat) -> Self {
+impl<'a, T: MatVec> RowsIterator<'a, T> {
+    pub fn new(mat: &'a SparseBlockMat<T>) -> Self {
         Self {
             ptr: &mat.ptr[..mat.n()],
             data: &mat.data,
         }
     }
 
-    pub fn new_range(mat: &'a SparseBlockMat, start: usize, end: usize) -> Self {
+    pub fn new_range(mat: &'a SparseBlockMat<T>, start: usize, end: usize) -> Self {
         Self {
             ptr: &mat.ptr[start..end],
             data: &mat.data[mat.ptr[start]..mat.ptr[end]],
@@ -40,8 +40,8 @@ impl<'a> RowsIterator<'a> {
     }
 }
 
-impl<'a> Iterator for RowsIterator<'a> {
-    type Item = Row<'a>;
+impl<'a, T: MatVec> Iterator for RowsIterator<'a, T> {
+    type Item = Row<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.empty() {
@@ -55,7 +55,7 @@ impl<'a> Iterator for RowsIterator<'a> {
     }
 }
 
-impl<'a> DoubleEndedIterator for RowsIterator<'a> {
+impl<'a, T: MatVec> DoubleEndedIterator for RowsIterator<'a, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.empty() {
             return None;
@@ -70,19 +70,19 @@ impl<'a> DoubleEndedIterator for RowsIterator<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for RowsIterator<'a> {
+impl<'a, T: MatVec> ExactSizeIterator for RowsIterator<'a, T> {
     fn len(&self) -> usize {
         self.length()
     }
 }
 
-pub struct ParallelRowsIterator<'a> {
+pub struct ParallelRowsIterator<'a, T: MatVec> {
     ptr: &'a [usize],
-    data: &'a [(usize, f64)],
+    data: &'a [(usize, T::Mat)],
 }
 
-impl<'a> ParallelRowsIterator<'a> {
-    pub fn new(mat: &'a SparseBlockMat) -> Self {
+impl<'a, T: MatVec> ParallelRowsIterator<'a, T> {
+    pub fn new(mat: &'a SparseBlockMat<T>) -> Self {
         Self {
             ptr: &mat.ptr[..mat.n()],
             data: &mat.data,
@@ -90,8 +90,8 @@ impl<'a> ParallelRowsIterator<'a> {
     }
 }
 
-impl<'a> ParallelIterator for ParallelRowsIterator<'a> {
-    type Item = Row<'a>;
+impl<'a, T: MatVec> ParallelIterator for ParallelRowsIterator<'a, T> {
+    type Item = Row<'a, T>;
 
     fn drive_unindexed<C>(self, consumer: C) -> C::Result
     where
@@ -105,7 +105,7 @@ impl<'a> ParallelIterator for ParallelRowsIterator<'a> {
     }
 }
 
-impl<'a> IndexedParallelIterator for ParallelRowsIterator<'a> {
+impl<'a, T: MatVec> IndexedParallelIterator for ParallelRowsIterator<'a, T> {
     fn len(&self) -> usize {
         self.ptr.len()
     }
@@ -125,14 +125,14 @@ impl<'a> IndexedParallelIterator for ParallelRowsIterator<'a> {
     }
 }
 
-pub struct ParallelRowProducer<'a> {
+pub struct ParallelRowProducer<'a, T: MatVec> {
     ptr: &'a [usize],
-    data: &'a [(usize, f64)],
+    data: &'a [(usize, T::Mat)],
 }
 
-impl<'a> rayon::iter::plumbing::Producer for ParallelRowProducer<'a> {
-    type Item = Row<'a>;
-    type IntoIter = RowsIterator<'a>;
+impl<'a, T: MatVec> rayon::iter::plumbing::Producer for ParallelRowProducer<'a, T> {
+    type Item = Row<'a, T>;
+    type IntoIter = RowsIterator<'a, T>;
 
     fn into_iter(self) -> Self::IntoIter {
         RowsIterator {
@@ -159,13 +159,13 @@ impl<'a> rayon::iter::plumbing::Producer for ParallelRowProducer<'a> {
     }
 }
 
-pub struct RowsMutIterator<'a> {
+pub struct RowsMutIterator<'a, T: MatVec> {
     ptr: &'a [usize],
-    data: *mut [(usize, f64)],
+    data: *mut [(usize, T::Mat)],
 }
 
-impl<'a> RowsMutIterator<'a> {
-    pub fn new(mat: &'a mut SparseBlockMat) -> Self {
+impl<'a, T: MatVec> RowsMutIterator<'a, T> {
+    pub fn new(mat: &'a mut SparseBlockMat<T>) -> Self {
         Self {
             ptr: &mat.ptr[..mat.n()],
             data: mat.data.as_mut_slice(),
@@ -191,8 +191,11 @@ impl<'a> RowsMutIterator<'a> {
     }
 }
 
-impl<'a> Iterator for RowsMutIterator<'a> {
-    type Item = RowMut<'a>;
+impl<'a, T: MatVec> Iterator for RowsMutIterator<'a, T>
+where
+    <T as MatVec>::Mat: 'a,
+{
+    type Item = RowMut<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.empty() {
@@ -206,7 +209,10 @@ impl<'a> Iterator for RowsMutIterator<'a> {
     }
 }
 
-impl<'a> DoubleEndedIterator for RowsMutIterator<'a> {
+impl<'a, T: MatVec> DoubleEndedIterator for RowsMutIterator<'a, T>
+where
+    <T as MatVec>::Mat: 'a,
+{
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.empty() {
             return None;
@@ -221,19 +227,28 @@ impl<'a> DoubleEndedIterator for RowsMutIterator<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for RowsMutIterator<'a> {
+impl<'a, T: MatVec> ExactSizeIterator for RowsMutIterator<'a, T>
+where
+    <T as MatVec>::Mat: 'a,
+{
     fn len(&self) -> usize {
         self.length()
     }
 }
 
-pub struct ParallelRowsMutIterator<'a> {
+pub struct ParallelRowsMutIterator<'a, T: MatVec>
+where
+    <T as MatVec>::Mat: 'a,
+{
     ptr: &'a [usize],
-    data: &'a mut [(usize, f64)],
+    data: &'a mut [(usize, T::Mat)],
 }
 
-impl<'a> ParallelRowsMutIterator<'a> {
-    pub fn new(mat: &'a mut SparseBlockMat) -> Self {
+impl<'a, T: MatVec> ParallelRowsMutIterator<'a, T>
+where
+    <T as MatVec>::Mat: 'a,
+{
+    pub fn new(mat: &'a mut SparseBlockMat<T>) -> Self {
         Self {
             ptr: &mat.ptr[..mat.n()],
             data: mat.data.as_mut_slice(),
@@ -241,8 +256,11 @@ impl<'a> ParallelRowsMutIterator<'a> {
     }
 }
 
-impl<'a> ParallelIterator for ParallelRowsMutIterator<'a> {
-    type Item = RowMut<'a>;
+impl<'a, T: MatVec> ParallelIterator for ParallelRowsMutIterator<'a, T>
+where
+    <T as MatVec>::Mat: 'a,
+{
+    type Item = RowMut<'a, T>;
 
     fn drive_unindexed<C>(self, consumer: C) -> C::Result
     where
@@ -256,7 +274,10 @@ impl<'a> ParallelIterator for ParallelRowsMutIterator<'a> {
     }
 }
 
-impl<'a> IndexedParallelIterator for ParallelRowsMutIterator<'a> {
+impl<'a, T: MatVec> IndexedParallelIterator for ParallelRowsMutIterator<'a, T>
+where
+    <T as MatVec>::Mat: 'a,
+{
     fn len(&self) -> usize {
         self.ptr.len()
     }
@@ -276,14 +297,20 @@ impl<'a> IndexedParallelIterator for ParallelRowsMutIterator<'a> {
     }
 }
 
-pub struct ParallelRowMutProducer<'a> {
+pub struct ParallelRowMutProducer<'a, T: MatVec>
+where
+    <T as MatVec>::Mat: 'a,
+{
     ptr: &'a [usize],
-    data: &'a mut [(usize, f64)],
+    data: &'a mut [(usize, T::Mat)],
 }
 
-impl<'a> rayon::iter::plumbing::Producer for ParallelRowMutProducer<'a> {
-    type Item = RowMut<'a>;
-    type IntoIter = RowsMutIterator<'a>;
+impl<'a, T: MatVec> rayon::iter::plumbing::Producer for ParallelRowMutProducer<'a, T>
+where
+    <T as MatVec>::Mat: 'a,
+{
+    type Item = RowMut<'a, T>;
+    type IntoIter = RowsMutIterator<'a, T>;
 
     fn into_iter(self) -> Self::IntoIter {
         RowsMutIterator {
