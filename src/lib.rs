@@ -8,7 +8,9 @@ use rayon::iter::{
 use rayon::slice::ParallelSliceMut;
 use std::ops::{Add, AddAssign, Sub, SubAssign};
 use std::{fmt::Display, ops::Range};
-mod iterators;
+pub mod iterators;
+#[cfg(feature = "nalgebra")]
+pub mod nalgebra;
 
 pub trait MatVec {
     type Mat: Send
@@ -164,12 +166,12 @@ impl Default for IterativeParams {
     }
 }
 
-pub struct SparseBlockMat<T: MatVec> {
+pub struct SparseMat<T: MatVec> {
     ptr: Vec<usize>,
     data: Vec<(usize, T::Mat)>,
 }
 
-impl<T: MatVec> SparseBlockMat<T> {
+impl<T: MatVec> SparseMat<T> {
     pub fn from_edges<I: Iterator<Item = [usize; 2]> + Clone>(
         n_verts: usize,
         edges: I,
@@ -456,12 +458,14 @@ impl<T: MatVec> SparseBlockMat<T> {
     }
 }
 
+pub type SparseMatF64 = SparseMat<f64>;
+
 #[cfg(test)]
 mod tests {
-    use crate::{IterativeParams, SparseBlockMat};
+    use crate::{IterativeParams, SparseMat, SparseMatF64};
     use rayon::iter::ParallelIterator;
 
-    fn get_laplacian_2d(ni: usize, nj: usize) -> SparseBlockMat<f64> {
+    fn get_laplacian_2d(ni: usize, nj: usize) -> SparseMatF64 {
         let dx = 1.0 / (ni as f64 + 1.0);
         let dy = 1.0 / (nj as f64 + 1.0);
 
@@ -478,7 +482,7 @@ mod tests {
                 }
             }
         }
-        let mut mat = SparseBlockMat::from_edges(ni * nj, edgs.iter().copied(), true);
+        let mut mat = SparseMat::from_edges(ni * nj, edgs.iter().copied(), true);
         for i in 0..ni {
             for j in 0..nj {
                 mat.set(idx(i, j), idx(i, j), -2.0 * (1.0 / dx / dx + 1.0 / dy / dy));
@@ -545,7 +549,7 @@ mod tests {
     fn test_mult() {
         let n = 100;
         let edges = (0..(n - 1)).map(|i| [i, i + 1]);
-        let mut mat = SparseBlockMat::<f64>::from_edges(n, edges, false);
+        let mut mat = SparseMatF64::from_edges(n, edges, false);
         assert_eq!(mat.n(), n);
         assert_eq!(mat.nnz(), 2 * (n - 2) + 2);
 
@@ -595,7 +599,7 @@ mod tests {
             .map(|(y, y_chunks)| (y - y_chunks).powi(2))
             .sum::<f64>()
             .sqrt();
-        assert!(err < 1e-12 * SparseBlockMat::<f64>::l2_norm(&y));
+        assert!(err < 1e-12 * SparseMatF64::l2_norm(&y));
     }
 
     #[test]
@@ -621,10 +625,10 @@ mod tests {
         };
         let (niter, residual) = mat.jacobi(&rhs, &mut b, params);
         assert!(niter < params.max_iter);
-        assert!(residual < params.rel_tol * SparseBlockMat::<f64>::l2_norm(&rhs));
+        assert!(residual < params.rel_tol * SparseMatF64::l2_norm(&rhs));
 
         let residual = mat.residual(&rhs, &b);
-        assert!(residual < params.rel_tol * SparseBlockMat::<f64>::l2_norm(&rhs));
+        assert!(residual < params.rel_tol * SparseMatF64::l2_norm(&rhs));
     }
 
     #[test]

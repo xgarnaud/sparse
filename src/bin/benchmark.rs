@@ -1,6 +1,6 @@
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use rayon::current_num_threads;
-use sparse::{IterativeParams, SparseBlockMat};
+use sparse::{IterativeParams, SparseMatF64};
 use std::time::Instant;
 
 fn benchmark<F: Fn()>(f: F, duration: f64) {
@@ -17,7 +17,7 @@ fn benchmark<F: Fn()>(f: F, duration: f64) {
     );
 }
 
-fn get_laplacian_2d(ni: usize, nj: usize) -> SparseBlockMat<f64> {
+fn get_laplacian_2d(ni: usize, nj: usize) -> SparseMatF64 {
     let dx = 1.0 / (ni as f64 + 1.0);
     let dy = 1.0 / (nj as f64 + 1.0);
 
@@ -34,7 +34,7 @@ fn get_laplacian_2d(ni: usize, nj: usize) -> SparseBlockMat<f64> {
             }
         }
     }
-    let mut mat = SparseBlockMat::from_edges(ni * nj, edgs.iter().copied(), true);
+    let mut mat = SparseMatF64::from_edges(ni * nj, edgs.iter().copied(), true);
     for i in 0..ni {
         for j in 0..nj {
             mat.set(idx(i, j), idx(i, j), -2.0 * (1.0 / dx / dx + 1.0 / dy / dy));

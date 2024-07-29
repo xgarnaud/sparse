@@ -1,4 +1,4 @@
-use crate::{MatVec, Row, RowMut, SparseBlockMat};
+use crate::{MatVec, Row, RowMut, SparseMat};
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 
 pub struct RowsIterator<'a, T: MatVec> {
@@ -7,14 +7,14 @@ pub struct RowsIterator<'a, T: MatVec> {
 }
 
 impl<'a, T: MatVec> RowsIterator<'a, T> {
-    pub fn new(mat: &'a SparseBlockMat<T>) -> Self {
+    pub fn new(mat: &'a SparseMat<T>) -> Self {
         Self {
             ptr: &mat.ptr[..mat.n()],
             data: &mat.data,
         }
     }
 
-    pub fn new_range(mat: &'a SparseBlockMat<T>, start: usize, end: usize) -> Self {
+    pub fn new_range(mat: &'a SparseMat<T>, start: usize, end: usize) -> Self {
         Self {
             ptr: &mat.ptr[start..end],
             data: &mat.data[mat.ptr[start]..mat.ptr[end]],
@@ -82,7 +82,7 @@ pub struct ParallelRowsIterator<'a, T: MatVec> {
 }
 
 impl<'a, T: MatVec> ParallelRowsIterator<'a, T> {
-    pub fn new(mat: &'a SparseBlockMat<T>) -> Self {
+    pub fn new(mat: &'a SparseMat<T>) -> Self {
         Self {
             ptr: &mat.ptr[..mat.n()],
             data: &mat.data,
@@ -165,7 +165,7 @@ pub struct RowsMutIterator<'a, T: MatVec> {
 }
 
 impl<'a, T: MatVec> RowsMutIterator<'a, T> {
-    pub fn new(mat: &'a mut SparseBlockMat<T>) -> Self {
+    pub fn new(mat: &'a mut SparseMat<T>) -> Self {
         Self {
             ptr: &mat.ptr[..mat.n()],
             data: mat.data.as_mut_slice(),
@@ -248,7 +248,7 @@ impl<'a, T: MatVec> ParallelRowsMutIterator<'a, T>
 where
     <T as MatVec>::Mat: 'a,
 {
-    pub fn new(mat: &'a mut SparseBlockMat<T>) -> Self {
+    pub fn new(mat: &'a mut SparseMat<T>) -> Self {
         Self {
             ptr: &mat.ptr[..mat.n()],
             data: mat.data.as_mut_slice(),
