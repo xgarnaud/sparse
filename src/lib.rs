@@ -104,13 +104,13 @@ pub struct SparseBlockMat {
 }
 
 #[derive(Clone, Copy)]
-pub struct JacobiParams {
+pub struct IterativeParams {
     pub max_iter: usize,
     pub rel_tol: f64,
     pub abs_tol: f64,
 }
 
-impl Default for JacobiParams {
+impl Default for IterativeParams {
     fn default() -> Self {
         Self {
             max_iter: 100,
@@ -195,7 +195,7 @@ impl SparseBlockMat {
     pub fn row_chunks(
         &self,
         chunk_size: usize,
-    ) -> impl IndexedParallelIterator<Item = RowsIterator<'_>> {
+    ) -> impl IndexedParallelIterator<Item = ((usize, usize), RowsIterator<'_>)> {
         let mut n_chunks = self.n() / chunk_size;
         if n_chunks * chunk_size < self.n() {
             n_chunks += 1;
@@ -203,10 +203,12 @@ impl SparseBlockMat {
         (0..n_chunks).into_par_iter().map(move |i_chunk| {
             let start = i_chunk * chunk_size;
             let end = (start + chunk_size).min(self.n());
-            RowsIterator::new_range(self, start, end)
+            ((start, end), RowsIterator::new_range(self, start, end))
         })
     }
-    pub fn seq_rows(&self) -> impl ExactSizeIterator<Item = Row<'_>> {
+    pub fn seq_rows(
+        &self,
+    ) -> impl ExactSizeIterator<Item = Row<'_>> + DoubleEndedIterator<Item = Row<'_>> {
         RowsIterator::new(self)
     }
     pub fn row_mut(&mut self, i: usize) -> RowMut<'_> {
@@ -216,7 +218,9 @@ impl SparseBlockMat {
     pub fn rows_mut(&mut self) -> impl IndexedParallelIterator<Item = RowMut<'_>> {
         ParallelRowsMutIterator::new(self)
     }
-    pub fn seq_rows_mut(&mut self) -> impl ExactSizeIterator<Item = RowMut<'_>> {
+    pub fn seq_rows_mut(
+        &mut self,
+    ) -> impl ExactSizeIterator<Item = RowMut<'_>> + DoubleEndedIterator<Item = RowMut<'_>> {
         RowsMutIterator::new(self)
     }
     pub fn set(&mut self, i: usize, j: usize, v: f64) {
@@ -246,7 +250,7 @@ impl SparseBlockMat {
         let mut res = vec![0.0; self.n()];
         self.row_chunks(chunk_size)
             .zip(res.par_chunks_mut(chunk_size))
-            .for_each(|(rows, res)| {
+            .for_each(|((_, rows), res)| {
                 rows.zip(res.iter_mut())
                     .for_each(|(row, y)| *y = row.mult(b))
             });
@@ -265,7 +269,7 @@ impl SparseBlockMat {
     pub fn l2_norm(b: &[f64]) -> f64 {
         b.par_iter().map(|x| x * x).sum::<f64>().sqrt()
     }
-    pub fn jacobi(&self, rhs: &[f64], b: &mut [f64], params: JacobiParams) -> (usize, f64) {
+    pub fn jacobi(&self, rhs: &[f64], b: &mut [f64], params: IterativeParams) -> (usize, f64) {
         let nrm = Self::l2_norm(rhs);
         assert!(nrm > f64::EPSILON);
         let tol = params.abs_tol.min(params.rel_tol * nrm);
@@ -298,11 +302,103 @@ impl SparseBlockMat {
         }
         (params.max_iter, res)
     }
+    pub fn sgs(
+        &self,
+        rhs: &[f64],
+        b: &mut [f64],
+        params: IterativeParams,
+        chunk_size: usize,
+    ) -> (usize, f64) {
+        let nrm = Self::l2_norm(rhs);
+        assert!(nrm > f64::EPSILON);
+        let tol = params.abs_tol.min(params.rel_tol * nrm);
+        let mut res = 0.0;
+
+        let mut diag = self.diag();
+        diag.par_iter_mut().for_each(|x| *x = 1.0 / *x);
+
+        for iter in 0..params.max_iter {
+            let b_copy = b.to_vec();
+            self.row_chunks(chunk_size)
+                .zip(b.par_chunks_mut(chunk_size))
+                .for_each(|(((start, end), rows), b)| {
+                    rows.enumerate().for_each(|(i_row, row)| {
+                        let i_row = i_row + start;
+                        let mut tmp = rhs[i_row];
+                        tmp -= row
+                            .iter()
+                            .filter(|&(j, _)| *j != i_row && *j >= start && *j < end)
+                            .fold(0.0, |x, (j, v)| x + v * b[*j - start]);
+                        tmp -= row
+                            .iter()
+                            .filter(|&(j, _)| *j < start || *j >= end)
+                            .fold(0.0, |x, (j, v)| x + v * b_copy[*j]);
+                        b[i_row - start] = tmp * diag[i_row]
+                    });
+                });
+            self.row_chunks(chunk_size)
+                .zip(b.par_chunks_mut(chunk_size))
+                .for_each(|(((start, end), rows), b)| {
+                    rows.enumerate().rev().for_each(|(i_row, row)| {
+                        let i_row = i_row + start;
+                        let mut tmp = rhs[i_row];
+                        tmp -= row
+                            .iter()
+                            .filter(|&(j, _)| *j != i_row && *j >= start && *j < end)
+                            .fold(0.0, |x, (j, v)| x + v * b[*j - start]);
+                        tmp -= row
+                            .iter()
+                            .filter(|&(j, _)| *j < start || *j >= end)
+                            .fold(0.0, |x, (j, v)| x + v * b_copy[*j]);
+                        b[i_row - start] = tmp * diag[i_row]
+                    });
+                });
+
+            res = self.residual(rhs, b);
+            if res < tol {
+                return (iter + 1, res);
+            }
+        }
+        (params.max_iter, res)
+    }
+    pub fn seq_sgs(&self, rhs: &[f64], b: &mut [f64], params: IterativeParams) -> (usize, f64) {
+        let nrm = Self::l2_norm(rhs);
+        assert!(nrm > f64::EPSILON);
+        let tol = params.abs_tol.min(params.rel_tol * nrm);
+        let mut res = 0.0;
+
+        let mut diag = self.diag();
+        diag.par_iter_mut().for_each(|x| *x = 1.0 / *x);
+
+        for iter in 0..params.max_iter {
+            self.seq_rows().enumerate().for_each(|(i_row, row)| {
+                let mut tmp = rhs[i_row];
+                tmp -= row
+                    .iter()
+                    .filter(|&(j, _)| *j != i_row)
+                    .fold(0.0, |x, (j, v)| x + v * b[*j]);
+                b[i_row] = tmp * diag[i_row]
+            });
+            self.seq_rows().enumerate().rev().for_each(|(i_row, row)| {
+                let mut tmp = rhs[i_row];
+                tmp -= row
+                    .iter()
+                    .filter(|&(j, _)| *j != i_row)
+                    .fold(0.0, |x, (j, v)| x + v * b[*j]);
+                b[i_row] = tmp * diag[i_row]
+            });
+            res = self.residual(rhs, b);
+            if res < tol {
+                return (iter + 1, res);
+            }
+        }
+        (params.max_iter, res)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{JacobiParams, SparseBlockMat};
+    use crate::{IterativeParams, SparseBlockMat};
     use rayon::iter::ParallelIterator;
 
     fn get_laplacian_2d(ni: usize, nj: usize) -> SparseBlockMat {
@@ -419,7 +515,10 @@ mod tests {
         use rand::{rngs::StdRng, Rng, SeedableRng};
 
         let mat = get_laplacian_2d(5, 5);
-        assert_eq!(mat.row_chunks(4).map(|rows| rows.len()).sum::<usize>(), 25);
+        assert_eq!(
+            mat.row_chunks(4).map(|(_, rows)| rows.len()).sum::<usize>(),
+            25
+        );
 
         let mut rng = StdRng::seed_from_u64(1234);
 
@@ -455,7 +554,7 @@ mod tests {
         let rhs = vec![1.0; mat.n()];
         let mut b = vec![0.0; mat.n()];
 
-        let params = JacobiParams {
+        let params = IterativeParams {
             max_iter: 2000,
             rel_tol: 1e-4,
             abs_tol: 1.0,
@@ -466,5 +565,55 @@ mod tests {
 
         let residual = mat.residual(&rhs, &b);
         assert!(residual < params.rel_tol * SparseBlockMat::l2_norm(&rhs));
+    }
+
+    #[test]
+    fn test_seq_sgs() {
+        let mat = get_laplacian_2d(16, 16);
+        let rhs = vec![1.0; mat.n()];
+
+        let params = IterativeParams {
+            max_iter: 200,
+            rel_tol: 2.5e-4,
+            abs_tol: 1.0,
+        };
+
+        let mut b = vec![0.0; mat.n()];
+        let (niter, residual_jac) = mat.jacobi(&rhs, &mut b, params);
+        assert_eq!(niter, params.max_iter);
+
+        let mut b = vec![0.0; mat.n()];
+        let (niter, residual_sgs) = mat.seq_sgs(&rhs, &mut b, params);
+        assert!(niter < params.max_iter);
+        assert!(residual_sgs < residual_jac * 0.01);
+    }
+
+    #[test]
+    fn test_sgs() {
+        let mat = get_laplacian_2d(16, 16);
+        let rhs = vec![1.0; mat.n()];
+
+        let params = IterativeParams {
+            max_iter: 200,
+            rel_tol: 2.5e-4,
+            abs_tol: 1.0,
+        };
+
+        let mut b = vec![0.0; mat.n()];
+        let (niter_seq_sgs, residual_seq_sgs) = mat.seq_sgs(&rhs, &mut b, params);
+        assert!(niter_seq_sgs < params.max_iter);
+
+        let mut b = vec![0.0; mat.n()];
+        let (niter_sgs_1, residual_sgs_1) = mat.sgs(&rhs, &mut b, params, 16 * 16);
+        assert!(niter_sgs_1 < params.max_iter);
+        assert_eq!(niter_sgs_1, niter_seq_sgs);
+        assert_eq!(residual_sgs_1, residual_seq_sgs);
+
+        let mut b = vec![0.0; mat.n()];
+        let (niter_sgs_2, residual_sgs_2) = mat.sgs(&rhs, &mut b, params, 16 * 16 / 5);
+        assert!(niter_sgs_2 < params.max_iter);
+        assert!(niter_sgs_2 > niter_seq_sgs);
+        assert!(residual_sgs_2 > residual_seq_sgs);
+        assert!(residual_sgs_2 < residual_seq_sgs * 2.0);
     }
 }

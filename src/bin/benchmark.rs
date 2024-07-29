@@ -1,6 +1,6 @@
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use rayon::current_num_threads;
-use sparse::{JacobiParams, SparseBlockMat};
+use sparse::{IterativeParams, SparseBlockMat};
 use std::time::Instant;
 
 fn benchmark<F: Fn()>(f: F, duration: f64) {
@@ -101,7 +101,7 @@ fn run(bench_type: BenchmarkType, n: usize, duration: f64) {
                 mat.jacobi(
                     &x,
                     &mut sol,
-                    JacobiParams {
+                    IterativeParams {
                         max_iter: 10,
                         ..Default::default()
                     },
