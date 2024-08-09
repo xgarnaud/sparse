@@ -169,7 +169,7 @@ impl<'a, T: MatVec> Display for RowMut<'a, T> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct IterativeParams {
     pub max_iter: usize,
     pub rel_tol: f64,
