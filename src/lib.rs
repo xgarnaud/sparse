@@ -338,10 +338,13 @@ impl<T: MatVec> SparseMat<T> {
     }
     pub fn mult(&self, b: &[T::Vect]) -> Vec<T::Vect> {
         let mut res = vec![T::vect_zero(); self.n()];
+        self.mult_to(b, &mut res);
+        res
+    }
+    pub fn mult_to(&self, b: &[T::Vect], res: &mut [T::Vect]) {
         self.rows()
             .zip(res.par_iter_mut())
             .for_each(|(row, y)| *y = row.mult(b));
-        res
     }
     pub fn seq_mult(&self, b: &[T::Vect]) -> Vec<T::Vect> {
         let mut res = vec![T::vect_zero(); self.n()];
