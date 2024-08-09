@@ -350,7 +350,7 @@ impl<T: MatVec> SparseMat<T> {
             b.par_iter_mut()
                 .zip(tmp.par_iter())
                 .zip(diag.par_iter())
-                .for_each(|((b, tmp), d)| *b = T::mult(d, &tmp));
+                .for_each(|((b, tmp), d)| *b = T::mult(d, tmp));
 
             res = self.residual(rhs, b);
             if res < tol {

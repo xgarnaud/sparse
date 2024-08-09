@@ -62,7 +62,7 @@ enum BenchmarkType {
     MultParChunks,
     JacobiPar,
     SGSSeq,
-    SGS,
+    Sgs,
 }
 
 fn run(bench_type: BenchmarkType, n: usize, duration: f64) {
@@ -125,7 +125,7 @@ fn run(bench_type: BenchmarkType, n: usize, duration: f64) {
             },
             duration,
         ),
-        BenchmarkType::SGS => benchmark(
+        BenchmarkType::Sgs => benchmark(
             || {
                 let chunk_size = mat.n() / current_num_threads();
                 let mut sol = vec![0.0; mat.n()];
@@ -157,5 +157,5 @@ fn main() {
     if current_num_threads() == 1 {
         run(BenchmarkType::SGSSeq, n, duration);
     }
-    run(BenchmarkType::SGS, n, duration);
+    run(BenchmarkType::Sgs, n, duration);
 }
