@@ -186,7 +186,7 @@ impl Default for IterativeParams {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum IterativeType {
     Jacobi,
     Sgs,
