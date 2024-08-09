@@ -53,6 +53,8 @@ pub trait MatVec {
         + Sub<Self::Vect, Output = Self::Vect>;
     fn mat_zero() -> Self::Mat;
     fn vect_zero() -> Self::Vect;
+    fn zero_mat(mat: &mut Self::Mat);
+    fn zero_vec(vec: &mut Self::Vect);
     fn inverse(mat: &Self::Mat) -> Self::Mat;
     fn mult(mat: &Self::Mat, vec: &Self::Vect) -> Self::Vect;
     fn norm2(vec: &Self::Vect) -> f64;
@@ -66,6 +68,12 @@ impl MatVec for f64 {
     }
     fn vect_zero() -> Self::Vect {
         0.0
+    }
+    fn zero_mat(mat: &mut Self::Mat) {
+        *mat = 0.0;
+    }
+    fn zero_vec(vec: &mut Self::Vect) {
+        *vec = 0.0;
     }
     fn inverse(mat: &Self::Mat) -> Self::Mat {
         1.0 / mat
@@ -151,7 +159,7 @@ impl<'a, T: MatVec> RowMut<'a, T> {
         self.0.sort_by(|xi, xj| xi.0.cmp(&xj.0));
     }
     pub fn zero(&mut self) {
-        self.iter_mut().for_each(|x| x.1 = T::mat_zero());
+        self.iter_mut().for_each(|x| T::zero_mat(&mut x.1));
     }
 }
 
@@ -265,6 +273,9 @@ impl<T: MatVec> SparseMat<T> {
     }
     pub fn nnz(&self) -> usize {
         self.data.len()
+    }
+    pub fn zero(&mut self) {
+        self.data.par_iter_mut().for_each(|(_, v)| T::zero_mat(v))
     }
     fn range(&self, i: usize) -> Range<usize> {
         self.ptr[i]..self.ptr[i + 1]

@@ -12,7 +12,12 @@ impl<const N: usize> MatVec for SMatrix<f64, N, N> {
     fn vect_zero() -> Self::Vect {
         Self::Vect::zeros()
     }
-
+    fn zero_mat(mat: &mut Self::Mat) {
+        mat.fill(0.0);
+    }
+    fn zero_vec(vec: &mut Self::Vect) {
+        vec.fill(0.0);
+    }
     fn inverse(mat: &Self::Mat) -> Self::Mat {
         mat.try_inverse().unwrap()
     }
