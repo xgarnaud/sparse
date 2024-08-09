@@ -166,6 +166,13 @@ impl Default for IterativeParams {
     }
 }
 
+#[derive(Clone, Copy)]
+pub enum IterativeType {
+    Jacobi,
+    Sgs,
+    SgsSeq,
+}
+
 pub struct SparseMat<T: MatVec> {
     ptr: Vec<usize>,
     data: Vec<(usize, T::Mat)>,
@@ -455,6 +462,22 @@ impl<T: MatVec> SparseMat<T> {
             }
         }
         (params.max_iter, res)
+    }
+    pub fn solve_iterative(
+        &self,
+        rhs: &[T::Vect],
+        b: &mut [T::Vect],
+        params: IterativeParams,
+        solver_type: IterativeType,
+    ) -> (usize, f64) {
+        match solver_type {
+            IterativeType::Jacobi => self.jacobi(rhs, b, params),
+            IterativeType::Sgs => {
+                let chunk_size = self.n() / rayon::current_num_threads();
+                self.sgs(rhs, b, params, chunk_size)
+            }
+            IterativeType::SgsSeq => self.seq_sgs(rhs, b, params),
+        }
     }
 }
 
