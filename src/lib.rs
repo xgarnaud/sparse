@@ -7,7 +7,7 @@ use rayon::iter::{
 };
 use rayon::slice::ParallelSliceMut;
 use std::iter::repeat;
-use std::ops::{Add, AddAssign, Sub, SubAssign};
+use std::ops::{Add, AddAssign, MulAssign, Sub, SubAssign};
 use std::{fmt::Display, ops::Range};
 
 pub mod iterators;
@@ -41,7 +41,8 @@ pub trait MatVec {
         + AddAssign
         + SubAssign
         + Add<Self::Mat, Output = Self::Mat>
-        + Sub<Self::Mat, Output = Self::Mat>;
+        + Sub<Self::Mat, Output = Self::Mat>
+        + MulAssign<f64>;
     type Vect: Send
         + Sync
         + Display
@@ -50,7 +51,8 @@ pub trait MatVec {
         + AddAssign
         + SubAssign
         + Add<Self::Vect, Output = Self::Vect>
-        + Sub<Self::Vect, Output = Self::Vect>;
+        + Sub<Self::Vect, Output = Self::Vect>
+        + MulAssign<f64>;
     fn mat_zero() -> Self::Mat;
     fn vect_zero() -> Self::Vect;
     fn zero_mat(mat: &mut Self::Mat);
@@ -160,6 +162,9 @@ impl<'a, T: MatVec> RowMut<'a, T> {
     }
     pub fn zero(&mut self) {
         self.iter_mut().for_each(|x| T::zero_mat(&mut x.1));
+    }
+    pub fn scale(&mut self, f: f64) {
+        self.iter_mut().for_each(|x| x.1 *= f);
     }
 }
 
@@ -327,6 +332,9 @@ impl<T: MatVec> SparseMat<T> {
             .enumerate()
             .map(|(i, row)| *row.get(i).unwrap())
             .collect::<Vec<_>>()
+    }
+    pub fn scale(&mut self, f: f64) {
+        self.rows_mut().for_each(|mut row| row.scale(f));
     }
     pub fn mult(&self, b: &[T::Vect]) -> Vec<T::Vect> {
         let mut res = vec![T::vect_zero(); self.n()];
