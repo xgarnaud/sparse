@@ -34,7 +34,7 @@ fn get_laplacian_2d(ni: usize, nj: usize) -> SparseMatF64 {
             }
         }
     }
-    let mut mat = SparseMatF64::from_edges(ni * nj, edgs.iter().copied(), true);
+    let mut mat = SparseMatF64::from_edges(ni * nj, edgs.iter().copied(), true).unwrap();
     for i in 0..ni {
         for j in 0..nj {
             mat.set(idx(i, j), idx(i, j), -2.0 * (1.0 / dx / dx + 1.0 / dy / dy));

@@ -1,16 +1,36 @@
 #![feature(raw_slice_split)]
-
+use core::fmt;
 use iterators::{ParallelRowsIterator, ParallelRowsMutIterator, RowsIterator, RowsMutIterator};
 use rayon::iter::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
     IntoParallelRefMutIterator, ParallelIterator,
 };
 use rayon::slice::ParallelSliceMut;
+use std::iter::repeat;
 use std::ops::{Add, AddAssign, Sub, SubAssign};
 use std::{fmt::Display, ops::Range};
+
 pub mod iterators;
+pub mod matrix_market;
 #[cfg(feature = "nalgebra")]
 pub mod nalgebra;
+
+pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+#[derive(Debug)]
+pub struct Error(String);
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "There is an error: {}", self.0)
+    }
+}
+impl std::error::Error for Error {}
+impl Error {
+    #[must_use]
+    pub fn from(msg: &str) -> Box<Self> {
+        Box::new(Self(msg.into()))
+    }
+}
 
 pub trait MatVec {
     type Mat: Send
@@ -179,48 +199,31 @@ pub struct SparseMat<T: MatVec> {
 }
 
 impl<T: MatVec> SparseMat<T> {
-    pub fn from_edges<I: Iterator<Item = [usize; 2]> + Clone>(
-        n_verts: usize,
-        edges: I,
-        with_diagonal: bool,
-    ) -> Self {
-        let mut ptr = if with_diagonal {
-            vec![1; n_verts + 1]
-        } else {
-            vec![0; n_verts + 1]
-        };
+    pub fn from_ij<I1: Iterator<Item = [usize; 2]> + Clone, I2: Iterator<Item = T::Mat> + Clone>(
+        n: usize,
+        ij: I1,
+        vals: I2,
+    ) -> Result<Self> {
+        let mut ptr = vec![0; n + 1];
 
         ptr[0] = 0;
-        for [i0, i1] in edges.clone() {
-            ptr[i0 + 1] += 1;
-            ptr[i1 + 1] += 1;
+        for [i, _] in ij.clone() {
+            ptr[i + 1] += 1;
         }
 
-        for i in 0..n_verts {
+        for i in 0..n {
             ptr[i + 1] += ptr[i];
         }
-        let nnz = ptr[n_verts];
+        let nnz = ptr[n];
         let mut data = vec![(usize::MAX, T::mat_zero()); nnz];
 
-        // diagonal part
-        if with_diagonal {
-            ptr.iter().take(n_verts).enumerate().for_each(|(i, &idx)| {
-                data[idx].0 = i;
-            });
-        }
-
-        for [i0, i1] in edges {
+        for ([i, j], val) in ij.zip(vals) {
             #[allow(clippy::needless_range_loop)]
-            for idx in ptr[i0]..ptr[i0 + 1] {
-                if data[idx].0 == usize::MAX {
-                    data[idx].0 = i1;
-                    break;
-                }
-            }
-            #[allow(clippy::needless_range_loop)]
-            for idx in ptr[i1]..ptr[i1 + 1] {
-                if data[idx].0 == usize::MAX {
-                    data[idx].0 = i0;
+            for idx in ptr[i]..ptr[i + 1] {
+                if data[idx].0 == j {
+                    return Err(Error::from("Entry ({i},{j}) already present"));
+                } else if data[idx].0 == usize::MAX {
+                    data[idx] = (j, val);
                     break;
                 }
             }
@@ -228,11 +231,34 @@ impl<T: MatVec> SparseMat<T> {
 
         let mut res = Self { ptr, data };
 
-        for i in 0..n_verts {
+        for i in 0..n {
             res.row_mut(i).sort();
         }
 
-        res
+        Ok(res)
+    }
+
+    pub fn from_edges<I: Iterator<Item = [usize; 2]> + Clone>(
+        n: usize,
+        edges: I,
+        with_diagonal: bool,
+    ) -> Result<Self> {
+        if with_diagonal {
+            Self::from_ij(
+                n,
+                edges
+                    .clone()
+                    .chain(edges.map(|[i, j]| [j, i]))
+                    .chain((0..n).map(|i| [i, i])),
+                repeat(T::mat_zero()),
+            )
+        } else {
+            Self::from_ij(
+                n,
+                edges.clone().chain(edges.map(|[i, j]| [j, i])),
+                repeat(T::mat_zero()),
+            )
+        }
     }
     pub fn n(&self) -> usize {
         self.ptr.len() - 1
@@ -485,8 +511,12 @@ pub type SparseMatF64 = SparseMat<f64>;
 
 #[cfg(test)]
 mod tests {
-    use crate::{IterativeParams, SparseMat, SparseMatF64};
+    use crate::{
+        matrix_market::{MTXReader, MTXWriter},
+        IterativeParams, Result, SparseMat, SparseMatF64,
+    };
     use rayon::iter::ParallelIterator;
+    use tempfile::NamedTempFile;
 
     fn get_laplacian_2d(ni: usize, nj: usize) -> SparseMatF64 {
         let dx = 1.0 / (ni as f64 + 1.0);
@@ -505,7 +535,7 @@ mod tests {
                 }
             }
         }
-        let mut mat = SparseMat::from_edges(ni * nj, edgs.iter().copied(), true);
+        let mut mat = SparseMat::from_edges(ni * nj, edgs.iter().copied(), true).unwrap();
         for i in 0..ni {
             for j in 0..nj {
                 mat.set(idx(i, j), idx(i, j), -2.0 * (1.0 / dx / dx + 1.0 / dy / dy));
@@ -572,7 +602,7 @@ mod tests {
     fn test_mult() {
         let n = 100;
         let edges = (0..(n - 1)).map(|i| [i, i + 1]);
-        let mut mat = SparseMatF64::from_edges(n, edges, false);
+        let mut mat = SparseMatF64::from_edges(n, edges, false).unwrap();
         assert_eq!(mat.n(), n);
         assert_eq!(mat.nnz(), 2 * (n - 2) + 2);
 
@@ -702,5 +732,31 @@ mod tests {
         assert!(niter_sgs_2 > niter_seq_sgs);
         assert!(residual_sgs_2 > residual_seq_sgs);
         assert!(residual_sgs_2 < residual_seq_sgs * 2.0);
+    }
+
+    #[test]
+    fn test_io() -> Result<()> {
+        let mat = get_laplacian_2d(5, 5);
+
+        let file = NamedTempFile::new().unwrap();
+        let fname = file.path().to_str().unwrap().to_owned() + ".mtx";
+        let writer = MTXWriter::new(&fname)?;
+        writer.write_matrix(&mat)?;
+
+        let mut reader = MTXReader::new(&fname)?;
+        let mat1 = reader.read_matrix()?;
+
+        assert_eq!(mat.n(), mat1.n());
+        assert_eq!(mat.nnz(), mat1.nnz());
+
+        for (row, row1) in mat.seq_rows().zip(mat1.seq_rows()) {
+            assert_eq!(row.len(), row1.len());
+            for ((j, v), (j1, v1)) in row.iter().zip(row1.iter()) {
+                assert_eq!(j, j1);
+                assert_eq!(v, v1);
+            }
+        }
+
+        Ok(())
     }
 }

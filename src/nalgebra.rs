@@ -54,7 +54,7 @@ mod tests {
         }
         let k = SMatrix::<f64, 2, 2>::new(1.0, 0.0, 0.0, 2.0);
 
-        let mut mat = SparseMat::from_edges(ni * nj, edgs.iter().copied(), true);
+        let mut mat = SparseMat::from_edges(ni * nj, edgs.iter().copied(), true).unwrap();
         for i in 0..ni {
             for j in 0..nj {
                 mat.set(
